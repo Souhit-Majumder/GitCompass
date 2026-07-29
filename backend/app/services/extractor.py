@@ -84,6 +84,7 @@ def extract_git_history(
     commits: List[Dict[str, Any]] = []
     file_diffs: List[Dict[str, Any]] = []
     unique_files: set[str] = set()
+    rename_map: Dict[str, str] = {}
 
     current_commit: Optional[Dict[str, Any]] = None
     commit_insertions = 0
@@ -145,7 +146,17 @@ def extract_git_history(
                 dels = int(raw_del) if raw_del.isdigit() else 0
 
                 current_path, old_path, is_rename = parse_git_path(raw_path)
-                unique_files.add(current_path)
+                
+                # Because git log outputs newest -> oldest, we can trace renames backwards.
+                # If we see a rename, map the old name to whatever the new name ultimately maps to.
+                if is_rename and old_path:
+                    target = rename_map.get(current_path, current_path)
+                    rename_map[old_path] = target
+                
+                # Resolve the current path to its most modern name
+                actual_path = rename_map.get(current_path, current_path)
+                
+                unique_files.add(actual_path)
 
                 commit_insertions += ins
                 commit_deletions += dels
@@ -156,7 +167,7 @@ def extract_git_history(
                         "commit_id": current_commit["id"],
                         "repo_id": repo_id,
                         "user_id": user_id,
-                        "file_path": current_path,
+                        "file_path": actual_path,
                         "old_path": old_path,
                         "is_rename": is_rename,
                         "insertions": ins,
@@ -169,6 +180,68 @@ def extract_git_history(
         current_commit["insertions"] = commit_insertions
         current_commit["deletions"] = commit_deletions
         commits.append(current_commit)
+
+    # Filter out files that no longer exist in HEAD (deleted files)
+    active_files: set[str] = set()
+    try:
+        ls_proc = subprocess.run(
+            ["git", "ls-tree", "-r", "HEAD", "--name-only"],
+            cwd=repo_dir,
+            stdout=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            timeout=30,
+        )
+        if ls_proc.returncode == 0:
+            active_files = set(ls_proc.stdout.splitlines())
+    except Exception as exc:
+        logger.warning("Failed to run git ls-tree: %s", exc)
+
+    if active_files:
+        # Find files that are in unique_files but NOT in active_files (deleted files)
+        deleted_files = unique_files - active_files
+        
+        # Tag deleted files in file_diffs rather than removing them
+        for fd in file_diffs:
+            if fd["file_path"] in deleted_files:
+                fd["is_deleted"] = True
+            else:
+                fd["is_deleted"] = False
+    else:
+        # If we failed to get active_files or repo is completely empty, assume active
+        for fd in file_diffs:
+            fd["is_deleted"] = False
+
+    # Handle Gitignore rules natively
+    ignored_files: set[str] = set()
+    if unique_files:
+        try:
+            # We cloned with --no-checkout to save I/O and space, which means .gitignore files 
+            # are not on disk. We must explicitly extract them before running check-ignore.
+            checkout_cmd = "git ls-tree -r HEAD --name-only | grep '\\.gitignore$' | xargs -I {} git checkout HEAD -- {}"
+            subprocess.run(checkout_cmd, shell=True, cwd=repo_dir, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+
+            # check-ignore --no-index --stdin accepts paths and returns the ones that match .gitignore
+            # --no-index is crucial: without it, tracked files are NOT ignored even if in .gitignore!
+            ignore_proc = subprocess.run(
+                ["git", "check-ignore", "--no-index", "--stdin"],
+                input="\n".join(unique_files),
+                cwd=repo_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                errors="replace",
+                timeout=30,
+            )
+            if ignore_proc.returncode in (0, 1): # 0 means some matched, 1 means none matched
+                ignored_files = set(ignore_proc.stdout.splitlines())
+        except Exception as exc:
+            logger.warning("Failed to run git check-ignore: %s", exc)
+
+    if ignored_files:
+        # Filter out file diffs that match ignored files
+        file_diffs = [fd for fd in file_diffs if fd["file_path"] not in ignored_files]
+        unique_files = unique_files - ignored_files
 
     logger.info(
         "Extracted %d commits and %d file diffs across %d unique files for repo %s",

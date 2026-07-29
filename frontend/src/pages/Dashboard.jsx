@@ -10,6 +10,7 @@
  */
 
 import { useState, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import StatusBadge from "../components/StatusBadge";
 
@@ -20,7 +21,8 @@ export default function Dashboard({ user }) {
 
   // Form state
   const [showAddModal, setShowAddModal] = useState(false);
-  const [githubUrl, setGithubUrl] = useState("");
+  const [newRepoUrl, setNewRepoUrl] = useState("");
+  const [newRepoBranch, setNewRepoBranch] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState(null);
 
@@ -82,7 +84,7 @@ export default function Dashboard({ user }) {
     e.preventDefault();
     setFormError(null);
 
-    const trimmed = githubUrl.trim();
+    const trimmed = newRepoUrl.trim();
     if (!trimmed) {
       setFormError("Please enter a valid GitHub URL.");
       return;
@@ -90,8 +92,12 @@ export default function Dashboard({ user }) {
 
     setSubmitting(true);
     try {
-      await api.post("/api/repositories", { github_url: trimmed });
-      setGithubUrl("");
+      await api.post("/api/repositories", { 
+        github_url: trimmed,
+        branch: newRepoBranch.trim() || undefined
+      });
+      setNewRepoUrl("");
+      setNewRepoBranch("");
       setShowAddModal(false);
       await loadRepositories();
     } catch (err) {
@@ -240,28 +246,33 @@ export default function Dashboard({ user }) {
             </div>
 
             <form onSubmit={handleAddRepository}>
-              <p className="text-sm text-text-secondary mb-4">
-                Enter a public GitHub repository URL to clone and mine its full git commit history.
-              </p>
-
               <div className="mb-4">
                 <label className="block text-xs font-medium text-text-secondary uppercase tracking-wider mb-2">
                   GitHub Repository URL
                 </label>
-                <input
-                  type="url"
-                  placeholder="https://github.com/owner/repository"
-                  value={githubUrl}
-                  onChange={(e) => setGithubUrl(e.target.value)}
-                  disabled={submitting}
-                  required
-                  className="
-                    w-full px-3.5 py-2.5 rounded-lg border border-border
-                    bg-surface text-text-primary text-sm
-                    focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500
-                    transition-all duration-150
-                  "
-                />
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <input
+                      type="url"
+                      required
+                      value={newRepoUrl}
+                      onChange={(e) => setNewRepoUrl(e.target.value)}
+                      placeholder="e.g. https://github.com/facebook/react"
+                      className="w-full px-3.5 py-2.5 rounded-lg border border-border bg-surface text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 transition-all duration-150"
+                      disabled={submitting}
+                    />
+                    <input
+                      type="text"
+                      value={newRepoBranch}
+                      onChange={(e) => setNewRepoBranch(e.target.value)}
+                      placeholder="Branch (e.g. main)"
+                      className="w-full sm:w-48 px-3.5 py-2.5 rounded-lg border border-border bg-surface text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 transition-all duration-150"
+                      disabled={submitting}
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-text-tertiary">
+                    Enter a public GitHub repository URL. The optional branch defaults to the primary branch. 
+                    If this repository is already tracked, it will be wiped and re-mined!
+                  </p>
               </div>
 
               {formError && (
@@ -352,9 +363,16 @@ export default function Dashboard({ user }) {
             >
               <div className="space-y-1">
                 <div className="flex items-center gap-3">
-                  <h3 className="text-base font-semibold text-text-primary">
-                    {repo.name || repo.github_url}
-                  </h3>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="text-base font-semibold text-text-primary group-hover:text-primary-600 transition-colors">
+                      {repo.name || "Unknown Repository"}
+                    </h3>
+                    {repo.default_branch && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-surface text-text-secondary border border-border uppercase tracking-wide">
+                        {repo.default_branch}
+                      </span>
+                    )}
+                  </div>
                   <StatusBadge status={repo.status} />
                 </div>
 
@@ -391,6 +409,22 @@ export default function Dashboard({ user }) {
                     {repo.total_files ? repo.total_files.toLocaleString() : "—"}
                   </p>
                 </div>
+
+                {repo.status === "ready" && (
+                  <Link
+                    to={`/repository/${repo.id}`}
+                    className="
+                      inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+                      bg-primary-50 text-primary-700 text-sm font-medium
+                      hover:bg-primary-100 transition-colors
+                    "
+                  >
+                    View Analytics
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </Link>
+                )}
 
                 <button
                   onClick={() => handleDeleteRepository(repo.id, repo.name)}

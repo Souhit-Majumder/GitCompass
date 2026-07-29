@@ -14,6 +14,9 @@ import { supabase } from "./lib/supabase";
 import Layout from "./components/Layout";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
+import RepositoryAnalytics from "./pages/RepositoryAnalytics";
+
+import { BrowserRouter, Routes, Route } from "react-router-dom";
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -68,10 +71,16 @@ export default function App() {
     return <Login />;
   }
 
-  // Authenticated → show dashboard
+  // Authenticated → show dashboard with routing
   return (
-    <Layout user={session.user}>
-      <Dashboard user={session.user} />
-    </Layout>
+    <BrowserRouter>
+      <Layout user={session.user}>
+        <Routes>
+          <Route path="/" element={<Dashboard user={session.user} />} />
+          {/* We will create RepositoryAnalytics component shortly */}
+          <Route path="/repository/:id" element={<RepositoryAnalytics user={session.user} />} />
+        </Routes>
+      </Layout>
+    </BrowserRouter>
   );
 }

@@ -11,7 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Tuple
+from typing import Tuple, Optional
 
 logger = logging.getLogger("gitcompass.cloner")
 
@@ -31,7 +31,7 @@ def parse_github_url(url: str) -> Tuple[str, str]:
     return owner, repo_name
 
 
-def clone_repository(github_url: str, target_dir: str) -> str:
+def clone_repository(github_url: str, target_dir: str, branch: Optional[str] = None) -> str:
     """Clones a GitHub repository to target_dir.
 
     Uses `git clone --filter=blob:none` when possible to speed up download time
@@ -51,9 +51,10 @@ def clone_repository(github_url: str, target_dir: str) -> str:
         "clone",
         "--filter=blob:none",
         "--no-checkout",
-        cleaned_url,
-        target_dir,
     ]
+    if branch:
+        cmd_blobless.extend(["--single-branch", "--branch", branch])
+    cmd_blobless.extend([cleaned_url, target_dir])
 
     try:
         res = subprocess.run(
@@ -78,9 +79,10 @@ def clone_repository(github_url: str, target_dir: str) -> str:
         "git",
         "clone",
         "--no-checkout",
-        cleaned_url,
-        target_dir,
     ]
+    if branch:
+        cmd_standard.extend(["--single-branch", "--branch", branch])
+    cmd_standard.extend([cleaned_url, target_dir])
 
     res = subprocess.run(
         cmd_standard,

@@ -14,6 +14,11 @@ class RepositoryCreate(BaseModel):
         description="Public GitHub repository URL (e.g. https://github.com/owner/repo)",
         example="https://github.com/fastapi/fastapi",
     )
+    branch: Optional[str] = Field(
+        None,
+        description="Optional branch to mine. Defaults to the repository's default branch if omitted.",
+        example="main",
+    )
 
     @field_validator("github_url")
     @classmethod

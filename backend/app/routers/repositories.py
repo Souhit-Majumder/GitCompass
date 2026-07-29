@@ -43,21 +43,25 @@ async def create_repository(
             detail=str(exc),
         )
 
-    # Check if this user is already tracking this exact repository
+    # Standardize URL to always end with .git for consistent DB querying
+    url_str = url_str.strip()
+    if not url_str.endswith(".git") and not url_str.startswith("git@"):
+        url_str = f"{url_str}.git"
+
+    # Check if this user is already tracking this repository
     existing = (
         db.table("repositories")
-        .select("*")
+        .select("id, status")
         .eq("user_id", user_id)
         .eq("github_url", url_str)
         .execute()
     )
     if existing.data:
         existing_repo = existing.data[0]
-        if existing_repo["status"] in ("pending", "cloning", "mining"):
-            return existing_repo
-        elif existing_repo["status"] == "ready":
-            # Already mined, return existing
-            return existing_repo
+        # Atomically wipe the existing repository and all its tracked history
+        # (relies on ON DELETE CASCADE constraints)
+        logger.info("Wiping existing repository %s to reload new branch", existing_repo["id"])
+        db.table("repositories").delete().eq("id", existing_repo["id"]).execute()
 
     # Insert new pending repository record
     new_repo_data = {
@@ -66,6 +70,9 @@ async def create_repository(
         "name": repo_name,
         "status": "pending",
     }
+    
+    if payload.branch:
+        new_repo_data["default_branch"] = payload.branch
 
     try:
         res = db.table("repositories").insert(new_repo_data).execute()
@@ -82,7 +89,7 @@ async def create_repository(
     repo_id = repo_record["id"]
 
     # Trigger asynchronous mining background task
-    background_tasks.add_task(mine_repository_task, repo_id, url_str, user_id)
+    background_tasks.add_task(mine_repository_task, repo_id, url_str, user_id, payload.branch)
     logger.info("Enqueued background task for repository %s (%s)", repo_id, url_str)
 
     return repo_record

@@ -11,7 +11,7 @@ This manual provides instructions on how to set up, run, and test the GitCompass
 
 ### 1. Database Configuration
 1. Go to your Supabase Dashboard and navigate to the **SQL Editor**.
-2. Copy the contents of `backend/supabase/migrations/001_initial_schema.sql` and run it. This will create the necessary tables (`profiles`, `repositories`, `commits`, `file_diffs`) along with their Row Level Security (RLS) policies and triggers.
+2. Copy the contents of `backend/supabase/migrations/001_initial_schema.sql` and `backend/supabase/migrations/002_analytics_rpc.sql` and run them. This will create the necessary tables (`profiles`, `repositories`, `commits`, `file_diffs`), RLS policies, triggers, and the analytics RPC function.
 3. In the Supabase Dashboard, go to **Authentication -> Providers** and enable **GitHub**. You will need to set up an OAuth app in GitHub Developer Settings and provide the Client ID and Client Secret here.
 4. Go to **Authentication -> URL Configuration** and add `http://localhost:5173` to the Redirect URLs.
 

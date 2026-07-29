@@ -12,8 +12,9 @@ Orchestrates the background repository mining workflow:
 from datetime import datetime, timezone
 import logging
 import tempfile
+import tempfile
 import traceback
-from typing import List, Any
+from typing import List, Any, Optional
 
 from app.database import get_service_client
 from app.services.cloner import clone_repository, parse_github_url, safe_cleanup_dir
@@ -38,7 +39,7 @@ def batch_insert(table_name: str, records: List[dict]):
         db.table(table_name).insert(chunk).execute()
 
 
-def mine_repository_task(repo_id: str, github_url: str, user_id: str):
+def mine_repository_task(repo_id: str, github_url: str, user_id: str, branch: Optional[str] = None):
     """Background task handler for repository mining."""
     logger.info("Starting background mining task for repo %s (url: %s)", repo_id, github_url)
     db = get_service_client()
@@ -57,7 +58,7 @@ def mine_repository_task(repo_id: str, github_url: str, user_id: str):
         ).eq("id", repo_id).execute()
 
         # Step 2: Clone repository into temp dir
-        clone_repository(github_url, temp_dir)
+        clone_repository(github_url, temp_dir, branch)
 
         # Step 3: Update status -> mining
         db.table("repositories").update(

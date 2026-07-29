@@ -26,3 +26,6 @@ Thumbs.db
 
 # Temp cloned repos (Phase 2)
 tmp_repos/
+
+# Files
+Errors.txt

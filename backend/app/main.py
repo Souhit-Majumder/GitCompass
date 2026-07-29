@@ -13,7 +13,7 @@ import logging
 from fastapi import FastAPI
 
 from app.config import settings
-from app.routers import health, repositories
+from app.routers import health, repositories, analytics
 
 # ── Logging ───────────────────────────────────────────────────
 
@@ -48,6 +48,7 @@ app = FastAPI(
 # Mount routers
 app.include_router(health.router)
 app.include_router(repositories.router)
+app.include_router(analytics.router)
 
 
 @app.get("/")
