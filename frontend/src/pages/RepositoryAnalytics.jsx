@@ -7,6 +7,7 @@
 import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "../lib/api";
+import HotspotTreemap from "../components/HotspotTreemap";
 
 export default function RepositoryAnalytics() {
   const { id } = useParams();
@@ -134,6 +135,11 @@ export default function RepositoryAnalytics() {
         >
           Historical Files ({historicalHotspots.length})
         </button>
+      </div>
+      
+      {/* ── Architecture Treemap ────────────────────────── */}
+      <div className="mb-8">
+        <HotspotTreemap hotspots={currentHotspots} />
       </div>
 
       {/* ── Hotspot Table ───────────────────────────────── */}

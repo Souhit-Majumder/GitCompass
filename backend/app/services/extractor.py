@@ -66,20 +66,17 @@ def extract_git_history(
         "-M",
     ]
 
-    res = subprocess.run(
-        cmd,
-        cwd=repo_dir,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
-        timeout=300,
-    )
-
-    if res.returncode != 0:
-        raise RuntimeError(f"Git log failed: {res.stderr.strip()}")
-
-    lines = res.stdout.splitlines()
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=repo_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            errors="replace"
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to start git log process: {exc}")
 
     commits: List[Dict[str, Any]] = []
     file_diffs: List[Dict[str, Any]] = []
@@ -90,96 +87,115 @@ def extract_git_history(
     commit_insertions = 0
     commit_deletions = 0
 
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
 
-        if line.startswith("COMMIT:"):
-            # Finalize previous commit stats before starting new one
-            if current_commit:
-                current_commit["insertions"] = commit_insertions
-                current_commit["deletions"] = commit_deletions
-                commits.append(current_commit)
+            if line.startswith("COMMIT:"):
+                # Finalize previous commit stats before starting new one
+                if current_commit:
+                    current_commit["insertions"] = commit_insertions
+                    current_commit["deletions"] = commit_deletions
+                    commits.append(current_commit)
 
-            # Reset per-commit trackers
-            commit_insertions = 0
-            commit_deletions = 0
+                # Reset per-commit trackers
+                commit_insertions = 0
+                commit_deletions = 0
 
-            # Parse line format: COMMIT:sha|author_name|author_email|timestamp|message
-            raw_data = line[7:]
-            parts = raw_data.split("|", 4)
+                # Parse line format: COMMIT:sha|author_name|author_email|timestamp|message
+                raw_data = line[7:]
+                parts = raw_data.split("|", 4)
 
-            sha = parts[0] if len(parts) > 0 else ""
-            author_name = parts[1] if len(parts) > 1 else ""
-            author_email = parts[2] if len(parts) > 2 else ""
-            raw_ts = parts[3] if len(parts) > 3 else "0"
-            message = parts[4] if len(parts) > 4 else ""
+                sha = parts[0] if len(parts) > 0 else ""
+                author_name = parts[1] if len(parts) > 1 else ""
+                author_email = parts[2] if len(parts) > 2 else ""
+                raw_ts = parts[3] if len(parts) > 3 else "0"
+                message = parts[4] if len(parts) > 4 else ""
 
+                try:
+                    ts_int = int(raw_ts)
+                    committed_at = datetime.fromtimestamp(ts_int, tz=timezone.utc).isoformat()
+                except ValueError:
+                    committed_at = datetime.now(timezone.utc).isoformat()
+
+                commit_id = str(uuid.uuid4())
+                current_commit = {
+                    "id": commit_id,
+                    "repo_id": repo_id,
+                    "user_id": user_id,
+                    "sha": sha,
+                    "author_name": author_name,
+                    "author_email": author_email,
+                    "committed_at": committed_at,
+                    "message": message,
+                    "insertions": 0,
+                    "deletions": 0,
+                }
+            elif current_commit:
+                # Numstat line: <insertions>\t<deletions>\t<path>
+                parts = line.split("\t", 2)
+                if len(parts) == 3:
+                    raw_ins, raw_del, raw_path = parts[0], parts[1], parts[2]
+
+                    # Handle binary files ("-  -   file.png")
+                    ins = int(raw_ins) if raw_ins.isdigit() else 0
+                    dels = int(raw_del) if raw_del.isdigit() else 0
+
+                    current_path, old_path, is_rename = parse_git_path(raw_path)
+                    
+                    # Because git log outputs newest -> oldest, we can trace renames backwards.
+                    # If we see a rename, map the old name to whatever the new name ultimately maps to.
+                    if is_rename and old_path:
+                        target = rename_map.get(current_path, current_path)
+                        rename_map[old_path] = target
+                    
+                    # Resolve the current path to its most modern name
+                    actual_path = rename_map.get(current_path, current_path)
+                    
+                    unique_files.add(actual_path)
+
+                    commit_insertions += ins
+                    commit_deletions += dels
+
+                    file_diffs.append(
+                        {
+                            "id": str(uuid.uuid4()),
+                            "commit_id": current_commit["id"],
+                            "repo_id": repo_id,
+                            "user_id": user_id,
+                            "file_path": actual_path,
+                            "old_path": old_path,
+                            "is_rename": is_rename,
+                            "insertions": ins,
+                            "deletions": dels,
+                        }
+                    )
+
+        # Don't forget the last commit
+        if current_commit:
+            current_commit["insertions"] = commit_insertions
+            current_commit["deletions"] = commit_deletions
+            commits.append(current_commit)
+
+        # Wait for the process to finish
+        proc.wait()
+        if proc.returncode != 0:
+            logger.warning(f"Git log finished with non-zero exit code: {proc.returncode}")
+
+    finally:
+        # Cleanup orphan process if exception occurs mid-stream
+        if proc.poll() is None:
+            proc.terminate()
             try:
-                ts_int = int(raw_ts)
-                committed_at = datetime.fromtimestamp(ts_int, tz=timezone.utc).isoformat()
-            except ValueError:
-                committed_at = datetime.now(timezone.utc).isoformat()
-
-            commit_id = str(uuid.uuid4())
-            current_commit = {
-                "id": commit_id,
-                "repo_id": repo_id,
-                "user_id": user_id,
-                "sha": sha,
-                "author_name": author_name,
-                "author_email": author_email,
-                "committed_at": committed_at,
-                "message": message,
-                "insertions": 0,
-                "deletions": 0,
-            }
-        elif current_commit:
-            # Numstat line: <insertions>\t<deletions>\t<path>
-            parts = line.split("\t", 2)
-            if len(parts) == 3:
-                raw_ins, raw_del, raw_path = parts[0], parts[1], parts[2]
-
-                # Handle binary files ("-  -   file.png")
-                ins = int(raw_ins) if raw_ins.isdigit() else 0
-                dels = int(raw_del) if raw_del.isdigit() else 0
-
-                current_path, old_path, is_rename = parse_git_path(raw_path)
-                
-                # Because git log outputs newest -> oldest, we can trace renames backwards.
-                # If we see a rename, map the old name to whatever the new name ultimately maps to.
-                if is_rename and old_path:
-                    target = rename_map.get(current_path, current_path)
-                    rename_map[old_path] = target
-                
-                # Resolve the current path to its most modern name
-                actual_path = rename_map.get(current_path, current_path)
-                
-                unique_files.add(actual_path)
-
-                commit_insertions += ins
-                commit_deletions += dels
-
-                file_diffs.append(
-                    {
-                        "id": str(uuid.uuid4()),
-                        "commit_id": current_commit["id"],
-                        "repo_id": repo_id,
-                        "user_id": user_id,
-                        "file_path": actual_path,
-                        "old_path": old_path,
-                        "is_rename": is_rename,
-                        "insertions": ins,
-                        "deletions": dels,
-                    }
-                )
-
-    # Don't forget the last commit
-    if current_commit:
-        current_commit["insertions"] = commit_insertions
-        current_commit["deletions"] = commit_deletions
-        commits.append(current_commit)
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        
+        # Close stdout to prevent ResourceWarning
+        if proc.stdout:
+            proc.stdout.close()
 
     # Filter out files that no longer exist in HEAD (deleted files)
     active_files: set[str] = set()
