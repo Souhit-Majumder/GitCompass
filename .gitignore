@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+backend/.venv/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp cloned repos (Phase 2)
+tmp_repos/
