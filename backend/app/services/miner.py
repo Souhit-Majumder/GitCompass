@@ -18,7 +18,7 @@ from typing import List, Any, Optional
 
 from app.database import get_service_client
 from app.services.cloner import clone_repository, parse_github_url, safe_cleanup_dir
-from app.services.extractor import extract_git_history
+from app.services.extractor import extract_git_history, compute_temporal_coupling
 
 logger = logging.getLogger("gitcompass.miner")
 
@@ -79,6 +79,12 @@ def mine_repository_task(repo_id: str, github_url: str, user_id: str, branch: Op
 
         logger.info("Writing %d file diffs to database...", len(file_diffs))
         batch_insert("file_diffs", file_diffs)
+        
+        # Step 5.5: Compute and insert temporal coupling
+        logger.info("Computing temporal coupling...")
+        couplings = compute_temporal_coupling(file_diffs, repo_id)
+        logger.info("Writing %d coupling edges to database...", len(couplings))
+        batch_insert("temporal_coupling", couplings)
 
         # Step 6: Mark repository as ready
         db.table("repositories").update(

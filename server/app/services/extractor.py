@@ -11,23 +11,36 @@ import re
 import subprocess
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
-import itertools
-from collections import defaultdict
 
 logger = logging.getLogger("gitcompass.extractor")
 
 RENAME_PATTERN_BRACES = re.compile(r"^(.*?)\{(.*?) => (.*?)\}(.*)$")
 RENAME_PATTERN_SIMPLE = re.compile(r"^(.*?) => (.*)$")
-CONVENTIONAL_COMMIT_REGEX = re.compile(
-    r"^(feat|fix|docs|style|refactor|perf|test|chore|ci|build)(?:\(.*\))?:",
-    re.IGNORECASE
+CONVENTIONAL_COMMIT_PATTERN = re.compile(
+    r"^(feat|fix|refactor|docs|test|chore|perf|style|ci|build|revert)(?:\([^\)]+\))?!?:\s*",
+    re.IGNORECASE,
 )
 
 
-def parse_commit_type(message: str) -> str:
-    match = CONVENTIONAL_COMMIT_REGEX.match(message.strip())
+def classify_commit_type(message: str) -> str:
+    """Classifies commit message into standard Conventional Commit types.
+
+    Returns one of: 'feat', 'fix', 'refactor', 'docs', 'test', 'chore', 'perf', 'style', 'ci', 'build', 'revert', or 'other'.
+    """
+    if not message:
+        return "other"
+
+    msg = message.strip()
+    match = CONVENTIONAL_COMMIT_PATTERN.match(msg)
     if match:
         return match.group(1).lower()
+
+    # Fallback heuristic checking leading words or prefix
+    lower_msg = msg.lower()
+    for ctype in ["feat", "fix", "refactor", "docs", "test", "chore", "perf", "style", "ci", "build", "revert"]:
+        if lower_msg.startswith(f"{ctype}:") or lower_msg.startswith(f"{ctype} "):
+            return ctype
+
     return "other"
 
 
@@ -61,14 +74,33 @@ def parse_git_path(path_str: str) -> Tuple[str, Optional[str], bool]:
 
 
 def extract_git_history(
-    repo_dir: str, repo_id: str, user_id: str
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, int]:
+    repo_dir: str, repo_id: str, user_id: str, since_sha: Optional[str] = None, progress_callback=None
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, int, Optional[str]]:
     """Bulk parses Git history for a repository.
 
     Returns:
-        (commits_list, file_diffs_list, total_commits, total_files)
+        (commits_list, file_diffs_list, total_commits, total_files, latest_commit_sha)
     """
-    logger.info("Extracting Git history for repo %s from %s", repo_id, repo_dir)
+    logger.info("Extracting Git history for repo %s from %s (since_sha=%s)", repo_id, repo_dir, since_sha)
+
+    log_range = f"{since_sha}..HEAD" if since_sha else "HEAD"
+
+    # Pre-flight check: total expected commits
+    total_commits_expected = 0
+    try:
+        count_proc = subprocess.run(
+            ["git", "rev-list", "--count", log_range],
+            cwd=repo_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=30,
+        )
+        if count_proc.returncode == 0:
+            total_commits_expected = int(count_proc.stdout.strip())
+            logger.info("Pre-flight check: Expecting %d commits for %s", total_commits_expected, repo_id)
+    except Exception as exc:
+        logger.warning("Failed to count expected commits: %s", exc)
 
     # Bulk git log command with --numstat and rename detection (-M)
     cmd = [
@@ -77,6 +109,7 @@ def extract_git_history(
         "--numstat",
         "--format=COMMIT:%H|%an|%ae|%at|%s",
         "-M",
+        log_range,
     ]
 
     try:
@@ -99,6 +132,9 @@ def extract_git_history(
     current_commit: Optional[Dict[str, Any]] = None
     commit_insertions = 0
     commit_deletions = 0
+    
+    commits_processed = 0
+    last_reported_pct = 0
 
     try:
         for line in proc.stdout:
@@ -112,6 +148,14 @@ def extract_git_history(
                     current_commit["insertions"] = commit_insertions
                     current_commit["deletions"] = commit_deletions
                     commits.append(current_commit)
+                    
+                    commits_processed += 1
+                    
+                    if progress_callback and total_commits_expected > 0:
+                        current_pct = int((commits_processed / total_commits_expected) * 100)
+                        if current_pct > last_reported_pct:
+                            progress_callback(current_pct)
+                            last_reported_pct = current_pct
 
                 # Reset per-commit trackers
                 commit_insertions = 0
@@ -143,7 +187,7 @@ def extract_git_history(
                     "author_email": author_email,
                     "committed_at": committed_at,
                     "message": message,
-                    "commit_type": parse_commit_type(message),
+                    "commit_type": classify_commit_type(message),
                     "insertions": 0,
                     "deletions": 0,
                 }
@@ -273,65 +317,15 @@ def extract_git_history(
         file_diffs = [fd for fd in file_diffs if fd["file_path"] not in ignored_files]
         unique_files = unique_files - ignored_files
 
+    latest_commit_sha = commits[0]["sha"] if commits else None
+
     logger.info(
-        "Extracted %d commits and %d file diffs across %d unique files for repo %s",
+        "Extracted %d commits and %d file diffs across %d unique files for repo %s (latest_sha=%s)",
         len(commits),
         len(file_diffs),
         len(unique_files),
         repo_id,
+        latest_commit_sha,
     )
 
-    return commits, file_diffs, len(commits), len(unique_files)
-
-
-def compute_temporal_coupling(file_diffs: List[Dict[str, Any]], repo_id: str) -> List[Dict[str, Any]]:
-    """Computes a co-change matrix to identify files that frequently change together.
-    
-    Filters out massive commits (>50 files) to reduce noise (e.g. lockfile updates).
-    Discards pairings that co-change fewer than 3 times or have < 35% coupling.
-    """
-    commit_files = defaultdict(set)
-    file_commit_counts = defaultdict(int)
-    
-    for diff in file_diffs:
-        # Ignore deleted/historical files for coupling to keep it focused on current architecture
-        if diff.get("is_deleted", False):
-            continue
-        commit_files[diff["commit_id"]].add(diff["file_path"])
-        
-    for files in commit_files.values():
-        if len(files) <= 50:
-            for f in files:
-                file_commit_counts[f] += 1
-                
-    pair_counts = defaultdict(int)
-    
-    for files in commit_files.values():
-        if len(files) > 50 or len(files) < 2:
-            continue
-            
-        # Sort files alphabetically to ensure (A, B) is identical to (B, A)
-        sorted_files = sorted(list(files))
-        for pair in itertools.combinations(sorted_files, 2):
-            pair_counts[pair] += 1
-            
-    couplings = []
-    for (file_a, file_b), count in pair_counts.items():
-        if count >= 3:
-            total_a = file_commit_counts[file_a]
-            total_b = file_commit_counts[file_b]
-            
-            # Calculate unidirectional max coupling (percentage of the lesser changed file)
-            coupling_pct = round((count / min(total_a, total_b)) * 100, 2)
-            
-            if coupling_pct >= 35.0:
-                couplings.append({
-                    "id": str(uuid.uuid4()),
-                    "repo_id": repo_id,
-                    "file_a": file_a,
-                    "file_b": file_b,
-                    "co_changes": count,
-                    "coupling_percentage": coupling_pct
-                })
-                
-    return couplings
+    return commits, file_diffs, len(commits), len(unique_files), latest_commit_sha

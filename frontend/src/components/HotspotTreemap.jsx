@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import * as d3 from "d3";
 
 function buildTree(hotspots) {
@@ -30,9 +30,22 @@ function buildTree(hotspots) {
   return root;
 }
 
-export default function HotspotTreemap({ hotspots }) {
+export default function HotspotTreemap({ hotspots, couplings = [] }) {
   const width = 1000;
   const height = 500;
+
+  const [hoveredPath, setHoveredPath] = useState(null);
+
+  // Compute a lookup set of coupled files for the currently hovered file
+  const activeCouplings = useMemo(() => {
+    if (!hoveredPath) return new Set();
+    const coupledFiles = new Set();
+    couplings.forEach(c => {
+      if (c.file_a === hoveredPath) coupledFiles.add(c.file_b);
+      if (c.file_b === hoveredPath) coupledFiles.add(c.file_a);
+    });
+    return coupledFiles;
+  }, [hoveredPath, couplings]);
 
   const rootData = useMemo(() => buildTree(hotspots), [hotspots]);
 
@@ -120,16 +133,34 @@ export default function HotspotTreemap({ hotspots }) {
             // Only render text if the block is large enough
             const showText = blockWidth > 45 && blockHeight > 22;
 
+            const isHovered = hoveredPath === leaf.data.path;
+            const isCoupled = activeCouplings.has(leaf.data.path);
+            
+            // UI dimming logic based on user guardrails
+            // Dim non-coupled files to 0.2 opacity when something is hovered
+            const isDimmed = hoveredPath && !isHovered && !isCoupled;
+            const opacity = isDimmed ? 0.2 : 1;
+            
+            // Contrasting stroke for coupled files to make them pop
+            const strokeColor = isCoupled ? "#0ea5e9" : "#ffffff"; // Sky blue stroke for coupled
+            const strokeWidth = isCoupled ? 2 : 1;
+
             return (
-              <g key={`leaf-${i}`} transform={`translate(${leaf.x0},${leaf.y0})`}>
+              <g 
+                key={`leaf-${i}`} 
+                transform={`translate(${leaf.x0},${leaf.y0})`}
+                onMouseEnter={() => setHoveredPath(leaf.data.path)}
+                onMouseLeave={() => setHoveredPath(null)}
+                style={{ opacity, transition: 'opacity 0.2s ease' }}
+              >
                 <rect
                   width={blockWidth}
                   height={blockHeight}
                   fill={colorScale(leaf.data.commits)}
-                  stroke="#ffffff"
-                  strokeWidth={1}
+                  stroke={strokeColor}
+                  strokeWidth={strokeWidth}
                   rx={2}
-                  className="hover:opacity-80 transition-opacity cursor-pointer stroke-white/50"
+                  className="hover:brightness-110 transition-all cursor-pointer"
                 >
                   <title>{`${leaf.data.path}\nCommits: ${leaf.data.commits}\nVolume (Lines Changed): ${leaf.data.value}`}</title>
                 </rect>
